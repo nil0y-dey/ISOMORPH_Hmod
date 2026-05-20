@@ -6,11 +6,11 @@ paper *ISOMORPH: A Supply Chain Digital Twin for Simulation, Dataset
 Generation, and Forecasting Benchmarks*:
 https://arxiv.org/pdf/2605.12768
 
-<a href="https://huggingface.co/spaces/HyeminGu/ISOMORPH-demo"><font color="red">Interactive simulation environment</font> for stress-testing supply chains under demand shocks, disruptions, and cascading transport congestion</a>
+<a href="https://huggingface.co/spaces/HyeminGu/ISOMORPH-demo"><font color="red"><strong>Interactive simulation environment</strong></font> for stress-testing supply chains under demand shocks, disruptions, and cascading transport congestion</a>
 
 [![ISOMORPH demo](figure/isomorph_uad_jukj.gif)](https://huggingface.co/spaces/HyeminGu/ISOMORPH-demo)
 
-The release contains four pieces:
+The release contains four components:
 
 1. The simulator that produces every released dataset
    (`simulator/`).
