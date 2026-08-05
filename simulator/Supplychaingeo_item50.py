@@ -1,7 +1,7 @@
 """
-Supply Chain Simulation — Day-level, 52560-step.
+Supply Chain Simulation — Day-level, 7300-step.
 
-1 step = 1 day | 365 steps = 1 year | 52560 steps = 144 years
+1 step = 1 day | 365 steps = 1 year | 7300 steps = 20 years
 
 logic:
   - (s,S) inventory policy at warehouses
@@ -705,7 +705,7 @@ def build_network_from_adjacency(nodes_meta, adjacency):
 
 
 # ============================================================================
-# Demand Generator  — day-level, 52560-step 
+# Demand Generator  — day-level, 7300-step
 # ============================================================================
 
 def build_demand_fn(
@@ -823,14 +823,14 @@ def build_demand_fn(
 
 def build_example_simulation_from_adjacency(
     seed=123,
-    horizon_days=52560,
+    horizon_days=7300,
     pipeline_multiplier=3.0,
     streaming_out_dir=None,
     packing="greedy",
     scenario=None,
 ):
     """
-    Day-level supply chain: 1 step = 1 day, 52560 days = 144 years.
+    Day-level supply chain: 1 step = 1 day, 7300 days = 20 years.
 
     Multi-echelon design:
       Sources (SF, StLouis, Orlando): magic replenishment (factory)
@@ -1084,8 +1084,8 @@ def export_map_with_animation(
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(
-        description="Supply Chain Simulation — day-level, 52560-step")
-    ap.add_argument("--days",          type=int,   default=52560)
+        description="Supply Chain Simulation — day-level, 7300-step")
+    ap.add_argument("--days",          type=int,   default=7300)
     ap.add_argument("--seed",          type=int,   default=2025)
     ap.add_argument("--out_dir",       type=str,   default="test_output")
     ap.add_argument("--pipeline_mult", type=float, default=0.0,
@@ -1141,7 +1141,7 @@ if __name__ == "__main__":
     print("=== Supply Chain Simulation (Multi-Echelon) ===")
     print(f"  Days: {args.days:,} ({args.days/365:.1f} years)  "
           f"Seed: {args.seed}")
-    print(f"  1 step = 1 day | 365 = 1 year | 52560 = 144 years")
+    print(f"  1 step = 1 day | 365 = 1 year | 7300 = 20 years")
     print(f"  Pipeline: {args.pipeline_mult}  Streaming: {streaming}")
     print()
 

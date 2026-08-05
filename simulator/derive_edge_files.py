@@ -174,7 +174,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario_dir", required=True,
                     help="Path to <output_mixture>/<name>/seed<seed>/")
-    ap.add_argument("--n_days", type=int, default=52560)
+    ap.add_argument("--n_days", type=int, default=7300)
     ap.add_argument("--n_items", type=int, default=50)
     ap.add_argument("--tau", type=float, default=0.9,
                     help="Saturation threshold; matches the convention "

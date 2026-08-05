@@ -10,6 +10,26 @@ https://arxiv.org/pdf/2605.12768
 
 [![ISOMORPH demo](figure/isomorph_uad_jukj.gif)](https://huggingface.co/spaces/HyeminGu/ISOMORPH-demo)
 
+---
+
+## Updates
+
+**08/05/2026** — Added `simulator/Supplychaingeo_item50_v2.py`: an extended C=50
+simulator with four physical-realism knobs on top of the baseline logic.
+
+| Extension | What it adds | Key knobs |
+|-----------|--------------|-----------|
+| Supplier disruption | Bernoulli-onset outages of fixed length at each source node; disrupted sources skip replenishment and reservoir refill | `--disruption_p_onset`, `--disruption_length_days` |
+| Finite source supply | Per-source raw-material reservoir that refills at a production rate and caps at a maximum level; outbound orders are capped at available reservoir units | `--prod_rate_per_item`, `--reservoir_cap_per_item`, `--init_frac` |
+| Finite warehouse capacity | Each intermediate node has a total volumetric cap; replenishment orders are capped to remaining headroom | `--warehouse_cap_scale` |
+| Stochastic edge transit | Per-shipment multiplicative Gaussian noise on the deterministic transit-time sum; clipped to ≥ 1 day | `--edge_tt_std_frac` |
+
+Setting all extension knobs to their defaults (disruption off, large reservoir, no warehouse cap, zero noise) exactly reproduces the base simulator.
+Two additional output files are written: `reservoir_history.csv` and `source_availability.csv`.
+See [§6](#6-extended-simulation-physical-realism-extensions) for usage.
+
+---
+
 The release contains four components:
 
 1. The simulator that produces every released dataset
@@ -32,6 +52,7 @@ Isomorph_release/
 ├── requirements.txt
 ├── simulator/
 │   ├── Supplychaingeo_item50.py     # canonical simulator, C=50 catalogue
+│   ├── Supplychaingeo_item50_v2.py  # extended: disruption + reservoir + warehouse cap + tt noise
 │   ├── Supplychaingeo_item200.py    # same logic, C=200 catalogue
 │   └── derive_edge_files.py         # post-process: edge_list.csv + utilisation
 ├── eval/
@@ -71,10 +92,12 @@ Each rollout writes:
 - `scenario.json` (the exact CLI knobs used)
 - optional: `edge_list.csv`, `edge_utilisation.npy`, `edge_saturation.npy`
   (produced by `simulator/derive_edge_files.py`)
+- optional (v2 only): `reservoir_history.csv`, `source_availability.csv`
+  (written by `simulator/Supplychaingeo_item50_v2.py`)
 
 ## Conventions
 
-- One step is one day. The released horizon is `T = 52,560`.
+- One step is one day. The released horizon is `T = 7,300`.
 - All released runs use seed `2025`.
 
 ---
@@ -84,7 +107,7 @@ Each rollout writes:
 C = 50 items:
 ```bash
 python simulator/Supplychaingeo_item50.py \
-    --days 52560 --seed 2025 \
+    --days 7300 --seed 2025 \
     --pipeline_mult 7 \
     --out_dir data/output_item50 \
     --scenario_name baseline
@@ -93,12 +116,12 @@ python simulator/Supplychaingeo_item50.py \
 C = 200 items:
 ```bash
 python simulator/Supplychaingeo_item200.py \
-    --days 52560 --seed 2025 \
+    --days 7300 --seed 2025 \
     --pipeline_mult 7 \
     --out_dir data/output_item200
 ```
 
-Both use horizon `T = 52,560` and pipeline multiplier `m = 7`. The
+Both use horizon `T = 7,300` and pipeline multiplier `m = 7`. The
 released datasets ship with `m = 7`; the simulator's built-in default
 is `m = 0`.
 
@@ -128,7 +151,7 @@ Two compound scenarios used in the foundation-model evaluation:
 Example (drift_mid):
 ```bash
 python simulator/Supplychaingeo_item50.py \
-    --days 52560 --seed 2025 --pipeline_mult 7 \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
     --phi_lo 0.95 --phi_hi 0.97 \
     --out_dir data/output_mixture/drift_mid \
     --scenario_name drift_mid
@@ -186,7 +209,7 @@ This writes `data/output_uq/manifest.csv` with three knobs per row
 while IFS=, read -r k phi rho_G rho_B; do
     [ "$k" = "k" ] && continue
     python simulator/Supplychaingeo_item50.py \
-        --days 52560 --seed 2025 --pipeline_mult 7 \
+        --days 7300 --seed 2025 --pipeline_mult 7 \
         --phi_lo "$phi" --phi_hi "$phi" \
         --shock_count_scale "$rho_G" --shock_height_scale "$rho_G" \
         --burst_rate_scale  "$rho_B" --burst_height_scale  "$rho_B" \
@@ -227,6 +250,60 @@ Baseline overview and scenario family figures:
 python analysis/make_baseline_overview.py
 python analysis/make_scenario_family.py
 ```
+
+## 6. Extended simulation (physical-realism extensions)
+
+`Supplychaingeo_item50_v2.py` wraps the C=50 network with four additional
+physical-realism knobs. All baseline scenario knobs (`--phi_lo`, `--phi_hi`,
+etc.) are preserved unchanged.
+
+Run the baseline with all extensions disabled (reproduces base output):
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 \
+    --pipeline_mult 7 \
+    --out_dir data/output_item50_ext \
+    --scenario_name baseline_ext
+```
+
+Enable supplier disruptions (each source goes down for 30 days with prob 0.001/day):
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --disruption_p_onset 0.001 --disruption_length_days 30 \
+    --out_dir data/output_mixture/disruption_mid \
+    --scenario_name disruption_mid
+```
+
+Enable finite source supply (production rate 50 units/item/day, reservoir capped at 2000):
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --prod_rate_per_item 50.0 --reservoir_cap_per_item 2000.0 \
+    --out_dir data/output_mixture/reservoir_tight \
+    --scenario_name reservoir_tight
+```
+
+Enable finite warehouse capacity (cap each intermediate node at 2× target-inventory volume):
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --warehouse_cap_scale 2.0 \
+    --out_dir data/output_mixture/warehouse_cap2x \
+    --scenario_name warehouse_cap2x
+```
+
+Enable stochastic transit times (10 % coefficient of variation on each shipment):
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --edge_tt_std_frac 0.1 \
+    --out_dir data/output_mixture/tt_noise10 \
+    --scenario_name tt_noise10
+```
+
+All four extensions can be combined freely. Extension-specific knobs are recorded
+in `scenario.json` alongside the baseline knobs for full provenance.
 
 ## Environment
 

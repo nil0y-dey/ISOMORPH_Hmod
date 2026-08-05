@@ -5,7 +5,7 @@
   Left column (3 panels)  -- raw_item_series.png style: each row is
                              one catalogue item showing demand,
                              served, and unmet overlaid over the
-                             full T = 52,560-day horizon. Items:
+                             full T = 7,300-day horizon. Items:
                              I01, I20, I40 sample the catalogue.
 
   Right column (3 panels) -- internal network state for the focal

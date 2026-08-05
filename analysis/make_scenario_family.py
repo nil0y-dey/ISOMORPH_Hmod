@@ -47,7 +47,7 @@ OUT  = REPO / "results" / "figures"
 OUT.mkdir(parents=True, exist_ok=True)
 
 ITEM = "I36"
-T_FULL = 52560
+T_FULL = 7300
 
 # (dir name, panel title, accent colour for line, shadow tint)
 SCENARIOS = [
