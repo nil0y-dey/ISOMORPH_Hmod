@@ -14,6 +14,21 @@ https://arxiv.org/pdf/2605.12768
 
 ## Updates
 
+**08/05/2026** — Extended `simulator/Supplychaingeo_item50_v2.py` with three
+scenario-control knobs and two new reproducible edge-cut example datasets.
+
+| Extension | What it adds | Key knobs |
+|-----------|--------------|-----------|
+| Targeted edge cut | Zero the capacity of a chosen set of directed edges during a fixed day window, with an optional linear post-cut restore ramp | `--disable_edges`, `--disable_from_day`, `--disable_days`, `--restore_ramp_days` |
+| Per-tier (s,S) overrides | Independent (s,S) scale per network tier (source, hub, T2–T5), layered on top of the global `--ss_scale` | `--ss_src`, `--ss_hub`, `--ss_tier2`, `--ss_tier3`, `--ss_tier4`, `--ss_tier5` |
+| Configurable SKU count | Trim the active catalog to the first N of 50 SKUs for small-catalog experiments | `--n_items` |
+
+The reservoir extension is now opt-in: omitting `--prod_rate_per_item` keeps plain
+base-simulator source semantics (no RNG drift). A `--source_production` shortcut
+sets the pure-faucet model (unlimited reservoir cap). Two edge-cut scenario
+datasets — ripple disruption and bottleneck migration — are reproducible with
+the commands in [§6](#6-extended-simulation-physical-realism-extensions).
+
 **08/05/2026** — Added `simulator/Supplychaingeo_item50_v2.py`: an extended C=50
 simulator with four physical-realism knobs on top of the baseline logic.
 
@@ -24,7 +39,8 @@ simulator with four physical-realism knobs on top of the baseline logic.
 | Finite warehouse capacity | Each intermediate node has a total volumetric cap; replenishment orders are capped to remaining headroom | `--warehouse_cap_scale` |
 | Stochastic edge transit | Per-shipment multiplicative Gaussian noise on the deterministic transit-time sum; clipped to ≥ 1 day | `--edge_tt_std_frac` |
 
-Setting all extension knobs to their defaults (disruption off, large reservoir, no warehouse cap, zero noise) exactly reproduces the base simulator.
+Setting all extension knobs to their defaults (disruption off, reservoir off, no
+warehouse cap, zero noise) exactly reproduces the base simulator.
 Two additional output files are written: `reservoir_history.csv` and `source_availability.csv`.
 See [§6](#6-extended-simulation-physical-realism-extensions) for usage.
 
@@ -52,7 +68,7 @@ Isomorph_release/
 ├── requirements.txt
 ├── simulator/
 │   ├── Supplychaingeo_item50.py     # canonical simulator, C=50 catalogue
-│   ├── Supplychaingeo_item50_v2.py  # extended: disruption + reservoir + warehouse cap + tt noise
+│   ├── Supplychaingeo_item50_v2.py  # extended: disruption + reservoir + warehouse cap + tt noise + edge cut + per-tier ss + n_items
 │   ├── Supplychaingeo_item200.py    # same logic, C=200 catalogue
 │   └── derive_edge_files.py         # post-process: edge_list.csv + utilisation
 ├── eval/
@@ -253,9 +269,9 @@ python analysis/make_scenario_family.py
 
 ## 6. Extended simulation (physical-realism extensions)
 
-`Supplychaingeo_item50_v2.py` wraps the C=50 network with four additional
-physical-realism knobs. All baseline scenario knobs (`--phi_lo`, `--phi_hi`,
-etc.) are preserved unchanged.
+`Supplychaingeo_item50_v2.py` wraps the C=50 network with seven additional
+knobs — four physical-realism extensions and three scenario-control extensions.
+All baseline scenario knobs (`--phi_lo`, `--phi_hi`, etc.) are preserved unchanged.
 
 Run the baseline with all extensions disabled (reproduces base output):
 ```bash
@@ -302,7 +318,56 @@ python simulator/Supplychaingeo_item50_v2.py \
     --scenario_name tt_noise10
 ```
 
-All four extensions can be combined freely. Extension-specific knobs are recorded
+### Edge-cut scenarios (ripple disruption and bottleneck migration)
+
+Use `--disable_edges` to zero the capacity of one or more directed edges during
+a fixed day window. An optional `--restore_ramp_days` linearly restores capacity
+after the cut ends. The two canonical edge-cut datasets:
+
+Ripple disruption — Nashville→Atlanta link cut for 60 days starting on day 6500:
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7.0 \
+    --phi_lo 0.999 --phi_hi 0.9996 \
+    --base_lambda_lo 80.0 --base_lambda_hi 250.0 \
+    --containers_scale 1.0 --ss_scale 1.0 --leadtime_scale 1.0 \
+    --shock_count_scale 1.0 --shock_height_scale 1.0 \
+    --burst_rate_scale 1.0 --burst_height_scale 1.0 \
+    --scenario_name ripple_disruption \
+    --disable_edges "Nashville,Atlanta" \
+    --disable_from_day 6500 --disable_days 60 \
+    --out_dir ./ripple_disruption
+```
+
+Bottleneck migration — Atlanta→Memphis link cut for 60 days starting on day 6500:
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7.0 \
+    --phi_lo 0.999 --phi_hi 0.9996 \
+    --base_lambda_lo 80.0 --base_lambda_hi 250.0 \
+    --containers_scale 1.0 --ss_scale 1.0 --leadtime_scale 1.0 \
+    --shock_count_scale 1.0 --shock_height_scale 1.0 \
+    --burst_rate_scale 1.0 --burst_height_scale 1.0 \
+    --scenario_name bottleneck_migration \
+    --disable_edges "Atlanta,Memphis" \
+    --disable_from_day 6500 --disable_days 60 \
+    --out_dir ./bottleneck_migration
+```
+
+### Per-tier (s,S) overrides
+
+Use `--ss_src`, `--ss_hub`, `--ss_tier2`–`--ss_tier5` to set independent
+safety-stock scales per network tier, layered on top of the global `--ss_scale`:
+
+```bash
+python simulator/Supplychaingeo_item50_v2.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --ss_scale 1.0 --ss_hub 0.5 --ss_tier2 0.3 \
+    --out_dir data/output_mixture/ss_staircase \
+    --scenario_name ss_staircase
+```
+
+All seven extensions can be combined freely. Every active knob is recorded
 in `scenario.json` alongside the baseline knobs for full provenance.
 
 ## Environment

@@ -1,32 +1,51 @@
 """
-Supply Chain Simulation — Extended (four physical-realism knobs).
+Supply Chain Simulation, extended with physical-realism and
+scenario-control knobs.
 
+Physical-realism (Bernoulli-random) knobs:
 
-  1. Supplier disruption  — Bernoulli-onset outages at each source, fixed
-     length. While a source is down: reservoir doesn't refill, its (s,S)
-     doesn't fire, and _replenish_warehouses cannot pull from it.
+  1. Supplier disruption: Bernoulli-onset outages at each source, fixed
+     length. While a source is down, its reservoir does not refill, its
+     (s,S) does not fire, and _replenish_warehouses cannot pull from it.
 
-  2. Finite source supply — sources hold a per-item raw-material reservoir
+  2. Finite source supply: sources hold a per-item raw-material reservoir
      that refills at production_rate/day and caps at reservoir_cap. When
      the source's (s,S) fires, the outbound order is capped at the
-     reservoir level, so shortages propagate downstream.
+     reservoir level, so shortages propagate downstream. Opt-in: only
+     installed when --prod_rate_per_item or --source_production is set.
 
-  3. Finite warehouse cap — each non-source, non-destination node has an
+  3. Finite warehouse cap: each non-source, non-destination node has an
      optional total volumetric capacity. `_replenish_warehouses` caps the
      order quantity at (cap - current_used_vol - committed_incoming_vol)
      / item.volume, so shipments never overshoot capacity.
 
-  4. Stochastic edge transit — per-shipment multiplicative Gaussian noise
-     on the deterministic edge-sum: sampled_tt = base_tt * (1 + N(0,std)),
+  4. Stochastic edge transit: per-shipment multiplicative Gaussian noise
+     on the deterministic edge-sum, sampled_tt = base_tt * (1 + N(0,std)),
      clipped to >=1 day.
 
-Setting {disruption_p_onset=0, prod_rate large, warehouse_cap_scale=None,
-edge_tt_std_frac=0} reproduces the base sim
+Deterministic-scenario knobs:
+
+  5. Targeted edge cut window: zero the capacity of a chosen set of
+     directed edges during [disable_from_day, disable_from_day+disable_days),
+     with an optional linear post-cut restore ramp.
+
+  6. Per-tier (s,S) scale overrides: src, hub, t2, t3, t4, t5 each accept
+     an independent scale, falling back to ss_scale when unset. Useful
+     for building tier-by-tier staircase depletions.
+
+  7. Configurable SKU count: --n_items selects the first N of I01..I50
+     for small-catalog experiments.
+
+Reproducibility: with every knob at its default (no reservoir, no
+warehouse cap, p_onset=0, edge_tt_std_frac=0, no disable_edges, no
+per-tier overrides, n_items=50), the runtime RNG consumption and node
+semantics reduce exactly to the base Supplychaingeo_item50_inv.py, so
+the same CLI produces byte-identical outputs.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import math
 import os
 import csv
@@ -154,6 +173,87 @@ def _generate_outage_schedule(
 
 
 # ============================================================================
+# Scenario-knob helpers (per-tier ss overrides + n_items trim)
+# ============================================================================
+
+# Tier assignments for the released 13-node US graph. Only referenced by
+# per-tier ss overrides; if none are set, this map is not used.
+NODE_TIER: Dict[str, str] = {
+    "SanFrancisco": "src", "StLouis": "src", "Orlando": "src",
+    "Nashville":    "hub",
+    "Atlanta":      "t2",
+    "Chicago":      "t3", "Charlotte": "t3", "Memphis": "t3",
+    "Columbus":     "t4", "Richmond":  "t4",
+    "Philadelphia": "t5", "Baltimore": "t5",
+}
+
+
+def _apply_per_tier_ss(net: Network, scenario: Optional[dict]) -> None:
+    """Rescale inventory/s_levels/S_levels per-tier, on top of the
+    ss_scale that the base builder already applied. No-op when none of
+    the per-tier keys are set. Does not touch the RNG."""
+    sc = scenario or {}
+    ss_scale = float(sc.get("ss_scale", 1.0))
+    tier_over: Dict[str, Optional[float]] = {
+        "src": sc.get("ss_src"),
+        "hub": sc.get("ss_hub"),
+        "t2":  sc.get("ss_tier2"),
+        "t3":  sc.get("ss_tier3"),
+        "t4":  sc.get("ss_tier4"),
+        "t5":  sc.get("ss_tier5"),
+    }
+    if all(v is None for v in tier_over.values()):
+        return
+    for nid, node in net.nodes.items():
+        if node.is_destination:
+            continue
+        tier = NODE_TIER.get(nid)
+        if tier is None:
+            continue
+        override = tier_over[tier]
+        if override is None:
+            continue
+        factor = float(override) / max(ss_scale, 1e-9)
+        for iid in list(node.inventory.keys()):
+            node.inventory[iid] = int(round(node.inventory[iid] * factor))
+        for iid in list(node.s_levels.keys()):
+            node.s_levels[iid] = max(0, int(round(
+                node.s_levels[iid] * factor)))
+        for iid in list(node.S_levels.keys()):
+            s_new = node.s_levels.get(iid, 0)
+            node.S_levels[iid] = max(s_new + 1, int(round(
+                node.S_levels[iid] * factor)))
+
+
+def _trim_items(
+    net: Network,
+    items: Dict[str, "object"],
+    demand_signals: np.ndarray,
+    n_items: Optional[int],
+) -> Tuple[Dict[str, "object"], np.ndarray]:
+    """Reduce the item catalog to the first n_items SKUs (I01..I{n_items}).
+    The base builder always generates all 50; this trims after the fact
+    for small-catalog experiments. Extra items already generated are
+    thrown away but their RNG draws are preserved, keeping the kept
+    items' volumes / (s,S) parameters identical to a full 50-item run."""
+    if n_items is None or n_items >= len(items):
+        return items, demand_signals
+    item_ids_full = sorted(items.keys())
+    kept = set(item_ids_full[:n_items])
+    for iid in list(items.keys()):
+        if iid not in kept:
+            del items[iid]
+    for node in net.nodes.values():
+        for d in (node.inventory, node.s_levels, node.S_levels,
+                  node.lead_time_mean, node.backlog,
+                  node.outstanding_orders):
+            for iid in list(d.keys()):
+                if iid not in kept:
+                    del d[iid]
+    return items, demand_signals[:, :n_items]
+
+
+# ============================================================================
 # Extended simulator
 # ============================================================================
 
@@ -165,6 +265,10 @@ class ExtendedSupplyChainSimulation(SupplyChainSimulation):
         disruption_p_onset: float = 0.0,
         disruption_length_days: int = 0,
         edge_tt_std_frac: float = 0.0,
+        disable_edges: Optional[List[Tuple[str, str]]] = None,
+        disable_from_day: int = -1,
+        disable_days: int = 0,
+        restore_ramp_days: int = 0,
         log_reservoir: bool = True,
         log_availability: bool = True,
         **kwargs,
@@ -177,6 +281,14 @@ class ExtendedSupplyChainSimulation(SupplyChainSimulation):
         self.log_reservoir = log_reservoir
         self.log_availability = log_availability
 
+        # Edge-cut window: deterministic zero-capacity on selected edges
+        # over a fixed day range, with optional linear restore ramp.
+        self.disable_edges = set(tuple(e) for e in (disable_edges or []))
+        self.disable_from_day = int(disable_from_day)
+        self.disable_days = int(disable_days)
+        self.restore_ramp_days = int(restore_ramp_days)
+        self._active_day: int = 0
+
         self._source_ids = [nid for nid, n in self.network.nodes.items()
                             if n.is_source]
         self._reservoir_source_ids = [
@@ -184,21 +296,53 @@ class ExtendedSupplyChainSimulation(SupplyChainSimulation):
             if isinstance(self.network.nodes[nid], ReservoirNode)]
 
         # Precompute per-source availability (uses self.rng so runs are
-        # reproducible per seed).
+        # reproducible per seed). With p_onset=0 or length=0 no rng draws
+        # are consumed, keeping the runtime RNG stream aligned with the
+        # base simulator's for reproduction.
         self.source_available = _generate_outage_schedule(
             self.rng, self.horizon_days, self._source_ids,
             self.disruption_p_onset, self.disruption_length_days)
 
-        # Summary printout
-        for nid, a in self.source_available.items():
-            down = int((~a).sum())
-            flips = int(np.sum(np.diff(a.astype(int)) < 0))
-            n_events = flips + (1 if (not bool(a[0])) else 0)
-            print(f"    disruption[{nid}]: {down} down-days "
-                  f"across {n_events} outage windows")
+        # Summary printout (only when there is something to report)
+        if self.disruption_p_onset > 0 and self.disruption_length_days > 0:
+            for nid, a in self.source_available.items():
+                down = int((~a).sum())
+                flips = int(np.sum(np.diff(a.astype(int)) < 0))
+                n_events = flips + (1 if (not bool(a[0])) else 0)
+                print(f"    disruption[{nid}]: {down} down-days "
+                      f"across {n_events} outage windows")
 
         self.reservoir_history: List[dict] = []
         self.availability_history: List[dict] = []
+
+        # Wrap net.reset_daily_edges so the targeted edge cut window +
+        # linear restore ramp are applied at the base sim's step-3
+        # without needing to override the entire step(). Only installed
+        # when a cut is actually configured, so the default path is a
+        # zero-overhead pass-through to the base method.
+        if self.disable_edges and self.disable_days > 0:
+            _orig_reset = self.network.reset_daily_edges
+
+            def _reset_with_cut(cap_factor: float = 1.0) -> None:
+                day = self._active_day
+                cut_end = self.disable_from_day + self.disable_days
+                in_cut = self.disable_from_day <= day < cut_end
+                if in_cut:
+                    _orig_reset(cap_factor, disabled=self.disable_edges)
+                    return
+                _orig_reset(cap_factor)
+                if (self.restore_ramp_days > 0
+                        and cut_end <= day
+                        < cut_end + self.restore_ramp_days):
+                    frac = (day - cut_end + 1) / float(
+                        self.restore_ramp_days)
+                    frac = max(0.0, min(1.0, frac))
+                    for e_key in self.disable_edges:
+                        e = self.network.edges.get(e_key)
+                        if e is not None:
+                            e.reset_daily(frac)
+
+            self.network.reset_daily_edges = _reset_with_cut
 
     # ---- helpers --------------------------------------------------------
 
@@ -308,6 +452,9 @@ class ExtendedSupplyChainSimulation(SupplyChainSimulation):
                     break
 
     def step(self, day: int) -> None:
+        # Make `day` visible to the monkey-patched reset_daily_edges.
+        self._active_day = day
+
         # 0) Set today's disruption flags on ReservoirNodes
         for nid in self._reservoir_source_ids:
             self.network.nodes[nid].frozen = \
@@ -379,18 +526,28 @@ def build_example_simulation_extended(
     streaming_out_dir: Optional[str] = None,
     packing: str = "greedy",
     scenario: Optional[dict] = None,
-    # Extension 2 knobs
-    prod_rate_per_item: float = 100.0,
-    reservoir_cap_per_item: float = 5000.0,
+    # Ext 2 (reservoir) — opt-in. Default None reproduces base Node semantics.
+    prod_rate_per_item: Optional[float] = None,
+    reservoir_cap_per_item: Optional[float] = None,
     init_frac: float = 1.0,
-    # Extension 3 knob
+    # Ext 3 (warehouse volumetric cap). None = unlimited.
     warehouse_cap_scale: Optional[float] = None,
-    # Extension 1 knobs
+    # Ext 1 (Bernoulli source outages).
     disruption_p_onset: float = 0.0,
     disruption_length_days: int = 0,
-    # Extension 4 knob
+    # Ext 4 (stochastic edge transit).
     edge_tt_std_frac: float = 0.0,
+    # Ext 5 (targeted edge cut window).
+    disable_edges: Optional[List[Tuple[str, str]]] = None,
+    disable_from_day: int = -1,
+    disable_days: int = 0,
+    restore_ramp_days: int = 0,
 ):
+    """Build the extended simulation. When every knob is at its
+    default (reservoir off, no warehouse cap, no outages, no tt noise,
+    no edge cut, no per-tier ss overrides in the scenario dict, no
+    n_items trim), the resulting sim reproduces the base
+    Supplychaingeo_item50_inv.py behavior byte-for-byte."""
     base_sim, net, items, demand_signals = \
         build_example_simulation_from_adjacency(
             seed=seed,
@@ -400,13 +557,26 @@ def build_example_simulation_extended(
             packing=packing,
             scenario=scenario)
 
+    # Apply per-tier (s,S) overrides on top of the base-applied ss_scale.
+    # No RNG consumed; no-op unless scenario carries ss_src/ss_hub/ss_tier*.
+    _apply_per_tier_ss(net, scenario)
+
+    # Optional catalog trim (I01..I{n_items}). No RNG consumed.
+    n_items = (scenario or {}).get("n_items")
+    items, demand_signals = _trim_items(net, items, demand_signals, n_items)
     item_ids = sorted(items.keys())
 
-    install_reservoirs(
-        net, item_ids,
-        prod_rate_per_item=prod_rate_per_item,
-        reservoir_cap_per_item=reservoir_cap_per_item,
-        init_frac=init_frac)
+    # Reservoirs are opt-in: only install when user actually asked for one.
+    # Leaves sources as plain Node otherwise, matching base behavior.
+    if prod_rate_per_item is not None:
+        cap = reservoir_cap_per_item if reservoir_cap_per_item is not None \
+            else 1e18  # effectively unlimited: acts as a pure
+                       # production-rate faucet with no reservoir depletion
+        install_reservoirs(
+            net, item_ids,
+            prod_rate_per_item=prod_rate_per_item,
+            reservoir_cap_per_item=cap,
+            init_frac=init_frac)
 
     # Per-node warehouse cap = target-inventory volume * scale.
     # Only applied to non-source, non-destination nodes.
@@ -419,15 +589,22 @@ def build_example_simulation_extended(
                         for iid in item_ids)
             warehouse_cap[nid] = float(s_vol * warehouse_cap_scale)
 
+    # Provenance printout
     n_sources = len(
         [n for n in net.nodes.values() if n.is_source])
-    total_prod = prod_rate_per_item * len(item_ids) * n_sources
-    mean_demand = float(demand_signals.mean() * len(item_ids))
-    print(f"  Sources: {n_sources}  reservoir cap={reservoir_cap_per_item:.0f} "
-          f"prod={prod_rate_per_item:.1f}/item/day/src")
-    print(f"    aggregate prod={total_prod:.0f}/day vs "
-          f"demand={mean_demand:.0f}/day "
-          f"({total_prod/max(mean_demand,1e-9):.2f}x)")
+    print(f"  Items: {len(item_ids)}  Sources: {n_sources}")
+    if prod_rate_per_item is not None:
+        total_prod = prod_rate_per_item * len(item_ids) * n_sources
+        mean_demand = float(demand_signals.mean() * len(item_ids))
+        cap_str = f"{reservoir_cap_per_item:.0f}" \
+            if reservoir_cap_per_item is not None else "inf"
+        print(f"  Reservoir: cap={cap_str} "
+              f"prod={prod_rate_per_item:.1f}/item/day/src  "
+              f"aggregate={total_prod:.0f}/day vs "
+              f"demand={mean_demand:.0f}/day "
+              f"({total_prod/max(mean_demand,1e-9):.2f}x)")
+    else:
+        print(f"  Reservoir: OFF (sources use base magic (s,S))")
     if warehouse_cap:
         caps_str = ", ".join(f"{k}={v:.0f}" for k, v in warehouse_cap.items())
         print(f"  Warehouse caps (vol, scale={warehouse_cap_scale}): {caps_str}")
@@ -436,6 +613,10 @@ def build_example_simulation_extended(
     print(f"  Disruption: p_onset={disruption_p_onset} "
           f"length={disruption_length_days}d  "
           f"Edge tt noise: std_frac={edge_tt_std_frac}")
+    if disable_edges:
+        print(f"  Edge cut: {list(disable_edges)}  "
+              f"from day {disable_from_day} for {disable_days}d  "
+              f"restore_ramp={restore_ramp_days}d")
 
     sim = ExtendedSupplyChainSimulation(
         network=net, items=items,
@@ -450,6 +631,10 @@ def build_example_simulation_extended(
         disruption_p_onset=disruption_p_onset,
         disruption_length_days=disruption_length_days,
         edge_tt_std_frac=edge_tt_std_frac,
+        disable_edges=disable_edges,
+        disable_from_day=disable_from_day,
+        disable_days=disable_days,
+        restore_ramp_days=restore_ramp_days,
     )
     return sim, net, items, demand_signals
 
@@ -464,17 +649,29 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(
         description="Extended supply-chain simulation "
-                    "(disruption + reservoir + warehouse cap + tt noise)")
+                    "(reservoir + warehouse cap + outages + tt noise + "
+                    "edge cut + per-tier ss + n_items)")
     ap.add_argument("--days",          type=int,   default=7300)
     ap.add_argument("--seed",          type=int,   default=2025)
     ap.add_argument("--out_dir",       type=str,   default="test_output_ext")
     ap.add_argument("--pipeline_mult", type=float, default=0.0)
     ap.add_argument("--no_streaming",  action="store_true")
 
-    # Extension 2 (reservoir)
-    ap.add_argument("--prod_rate_per_item",     type=float, default=100.0)
-    ap.add_argument("--reservoir_cap_per_item", type=float, default=5000.0)
+    # Extension 2 (reservoir). Opt-in: unset = plain Node (base semantics).
+    ap.add_argument("--prod_rate_per_item",     type=float, default=None,
+                    help="Per-item, per-source production rate (units/day). "
+                         "Setting this installs ReservoirNode at every "
+                         "source. Omit to keep base magic (s,S) behavior.")
+    ap.add_argument("--reservoir_cap_per_item", type=float, default=None,
+                    help="Per-item reservoir cap. Omit to make the "
+                         "reservoir effectively unlimited (pure "
+                         "production-rate faucet, no reservoir depletion).")
     ap.add_argument("--init_frac",              type=float, default=1.0)
+    ap.add_argument("--source_production",      type=float, default=None,
+                    help="Shortcut for the pure faucet model: sets "
+                         "--prod_rate_per_item=X and leaves the reservoir "
+                         "cap unlimited, so each source produces X units "
+                         "per item per day with no depletion dynamic.")
 
     # Extension 3 (warehouse cap). None → unlimited.
     ap.add_argument("--warehouse_cap_scale",    type=float, default=None,
@@ -482,7 +679,7 @@ if __name__ == "__main__":
                          "target-inventory volume (sum S_iid * volume). "
                          "Omit for unlimited.")
 
-    # Extension 1 (supplier disruption)
+    # Extension 1 (Bernoulli supplier disruption)
     ap.add_argument("--disruption_p_onset",     type=float, default=0.0,
                     help="Per-day Bernoulli prob of an outage starting "
                          "at each source (when currently available).")
@@ -495,6 +692,19 @@ if __name__ == "__main__":
                          "time: sampled = base * (1 + N(0, std_frac)), "
                          "clipped to >=1 day.")
 
+    # Extension 5 (targeted edge cut window).
+    ap.add_argument("--disable_edges", type=str, default="",
+                    help="Semicolon-separated 'u,v' pairs of directed "
+                         "edges to zero-capacity during the disruption "
+                         "window. e.g. 'Nashville,Atlanta' or "
+                         "'Atlanta,Chicago;Nashville,Atlanta'.")
+    ap.add_argument("--disable_from_day", type=int, default=-1)
+    ap.add_argument("--disable_days",     type=int, default=0)
+    ap.add_argument("--restore_ramp_days", type=int, default=0,
+                    help="After the cut ends, previously-disabled edges' "
+                         "capacity ramps linearly from 0 to full over this "
+                         "many days. Default 0 = instant restoration.")
+
     # Baseline scenario knobs (unchanged from base file)
     ap.add_argument("--phi_lo",             type=float, default=0.9990)
     ap.add_argument("--phi_hi",             type=float, default=0.9996)
@@ -502,14 +712,52 @@ if __name__ == "__main__":
     ap.add_argument("--shock_height_scale", type=float, default=1.0)
     ap.add_argument("--seasonal_scale",     type=float, default=1.0)
     ap.add_argument("--containers_scale",   type=float, default=1.0)
-    ap.add_argument("--ss_scale",           type=float, default=1.0)
+    ap.add_argument("--ss_scale",           type=float, default=1.0,
+                    help="Global (s,S) scale. Per-tier overrides below take "
+                         "precedence when set.")
+    # Per-tier (s,S) overrides.
+    ap.add_argument("--ss_src",   type=float, default=None,
+                    help="(s,S) scale override for source nodes.")
+    ap.add_argument("--ss_hub",   type=float, default=None,
+                    help="(s,S) scale override for the Hub (Nashville).")
+    ap.add_argument("--ss_tier2", type=float, default=None,
+                    help="(s,S) scale override for Tier-2 (Atlanta).")
+    ap.add_argument("--ss_tier3", type=float, default=None,
+                    help="(s,S) scale override for Tier-3 (Chicago, "
+                         "Charlotte, Memphis).")
+    ap.add_argument("--ss_tier4", type=float, default=None,
+                    help="(s,S) scale override for Tier-4 (Columbus, "
+                         "Richmond).")
+    ap.add_argument("--ss_tier5", type=float, default=None,
+                    help="(s,S) scale override for Tier-5 (Philadelphia, "
+                         "Baltimore).")
     ap.add_argument("--leadtime_scale",     type=float, default=1.0)
     ap.add_argument("--burst_rate_scale",   type=float, default=1.0)
     ap.add_argument("--burst_height_scale", type=float, default=1.0)
     ap.add_argument("--base_lambda_lo",     type=float, default=80.0)
     ap.add_argument("--base_lambda_hi",     type=float, default=250.0)
+    ap.add_argument("--n_items",            type=int,   default=50,
+                    help="Number of item SKUs to simulate (default 50); "
+                         "smaller values enable small-catalog experiments.")
     ap.add_argument("--scenario_name",      type=str,   default="baseline_ext")
     args = ap.parse_args()
+
+    # --source_production shortcut: sets prod rate, leaves cap unlimited.
+    if args.source_production is not None:
+        if args.prod_rate_per_item is None:
+            args.prod_rate_per_item = args.source_production
+        if args.reservoir_cap_per_item is None:
+            pass  # None -> unlimited inside build_example_simulation_extended
+
+    # Parse edge-cut list "u,v;u2,v2" -> [("u","v"), ("u2","v2")]
+    disable_edges_list: List[Tuple[str, str]] = []
+    if args.disable_edges:
+        for pair in args.disable_edges.split(";"):
+            pair = pair.strip()
+            if not pair:
+                continue
+            u, v = [s.strip() for s in pair.split(",", 1)]
+            disable_edges_list.append((u, v))
 
     scenario = {
         "name": args.scenario_name,
@@ -525,6 +773,12 @@ if __name__ == "__main__":
         "base_lambda_lo": args.base_lambda_lo,
         "base_lambda_hi": args.base_lambda_hi,
         "seed": args.seed, "days": args.days,
+        "n_items": args.n_items,
+        # Edge-cut knobs recorded for provenance
+        "disable_edges": disable_edges_list,
+        "disable_from_day": args.disable_from_day,
+        "disable_days": args.disable_days,
+        "restore_ramp_days": args.restore_ramp_days,
         # Ext knobs also recorded for provenance
         "prod_rate_per_item": args.prod_rate_per_item,
         "reservoir_cap_per_item": args.reservoir_cap_per_item,
@@ -534,6 +788,12 @@ if __name__ == "__main__":
         "disruption_length_days": args.disruption_length_days,
         "edge_tt_std_frac": args.edge_tt_std_frac,
     }
+    # Only include per-tier ss overrides that the user actually passed.
+    for k, v in [("ss_src", args.ss_src), ("ss_hub", args.ss_hub),
+                 ("ss_tier2", args.ss_tier2), ("ss_tier3", args.ss_tier3),
+                 ("ss_tier4", args.ss_tier4), ("ss_tier5", args.ss_tier5)]:
+        if v is not None:
+            scenario[k] = float(v)
 
     streaming = not args.no_streaming and args.days > 500
 
@@ -557,6 +817,10 @@ if __name__ == "__main__":
         disruption_p_onset=args.disruption_p_onset,
         disruption_length_days=args.disruption_length_days,
         edge_tt_std_frac=args.edge_tt_std_frac,
+        disable_edges=disable_edges_list,
+        disable_from_day=args.disable_from_day,
+        disable_days=args.disable_days,
+        restore_ramp_days=args.restore_ramp_days,
     )
 
     os.makedirs(args.out_dir, exist_ok=True)
