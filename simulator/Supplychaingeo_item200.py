@@ -738,7 +738,8 @@ def build_demand_fn(
     n_global = int(rng.integers(5, 12))
     for _ in range(n_global):
         si  = int(rng.integers(0, n_steps))
-        dur = int(rng.integers(180, 1100))
+        # dur = int(rng.integers(180, 1100))  changed here. patch is no-op at original horizon(7300)
+        dur = max(1, int(rng.integers(180, 1100) * n_steps / 7300))
         end = min(si + dur, n_steps)
         h   = rng.uniform(0.20, 0.60)
         for k in range(si, end):
