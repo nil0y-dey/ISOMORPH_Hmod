@@ -751,7 +751,8 @@ def build_demand_fn(
     n_global = max(0, int(round(float(base_n_global) * shock_count_scale)))
     for _ in range(n_global):
         si  = int(rng.integers(0, n_steps))
-        dur = int(rng.integers(180, 1100))
+        # dur = int(rng.integers(180, 1100))  changed here. this patch is a no-op at the original horizon.
+        dur = max(1, int(rng.integers(180, 1100) * n_steps / 7300))
         end = min(si + dur, n_steps)
         h   = rng.uniform(0.20, 0.60) * shock_height_scale
         for k in range(si, end):
