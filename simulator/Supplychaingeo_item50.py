@@ -989,12 +989,18 @@ def build_example_simulation_from_adjacency(
 
     net = build_network_from_adjacency(nodes_meta, adj)
 
+    """ PATCHED
     sc = scenario or {}
     containers_scale = float(sc.get("containers_scale", 1.0))
     if containers_scale != 1.0:
         for eid, e in net.edges.items():
             e.num_containers_per_day = max(
                 1, int(round(e.num_containers_per_day * containers_scale)))
+
+    base_lambda_lo = float(sc.get("base_lambda_lo", 80))
+    """
+    sc = scenario or {}
+    containers_scale = float(sc.get("containers_scale", 1.0))
 
     base_lambda_lo = float(sc.get("base_lambda_lo", 80))
     base_lambda_hi = float(sc.get("base_lambda_hi", 250))
@@ -1041,7 +1047,19 @@ def build_example_simulation_from_adjacency(
         streaming_out_dir=streaming_out_dir,
         packing=packing)
 
-    return sim, net, items, demand_signals
+          # PATCHED: apply containers_scale AFTER self-calibration, to
+      # container_volume (continuous) rather than num_containers_per_day
+      # (a size-3 integer on every edge, whose rounding collapsed most of
+      # [0,1] into ~4 achievable levels). Applied network-wide, including
+      # the last-mile edges just self-calibrated to demand above, so
+      # severity now scales the actual bottleneck continuously. No-op at
+      # containers_scale=1.0 (the released default).
+      if containers_scale != 1.0:
+          for eid, e in net.edges.items():
+              e.container_volume = e.container_volume * containers_scale
+              net.weight_cache[eid] = e.travel_time_days / max(e.daily_total_capacity, 1e-9)
+  
+      return sim, net, items, demand_signals
 
 
 # ============================================================================
