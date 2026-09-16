@@ -989,16 +989,7 @@ def build_example_simulation_from_adjacency(
 
     net = build_network_from_adjacency(nodes_meta, adj)
 
-    """ PATCHED
-    sc = scenario or {}
-    containers_scale = float(sc.get("containers_scale", 1.0))
-    if containers_scale != 1.0:
-        for eid, e in net.edges.items():
-            e.num_containers_per_day = max(
-                1, int(round(e.num_containers_per_day * containers_scale)))
-
-    base_lambda_lo = float(sc.get("base_lambda_lo", 80))
-    """
+    
     sc = scenario or {}
     containers_scale = float(sc.get("containers_scale", 1.0))
 
