@@ -1046,11 +1046,11 @@ def build_example_simulation_from_adjacency(
       # severity now scales the actual bottleneck continuously. No-op at
       # containers_scale=1.0 (the released default).
 
-  if containers_scale != 1.0:
-      for eid, e in net.edges.items():
-          e.container_volume = e.container_volume * containers_scale
-           net.weight_cache[eid] = e.travel_time_days / max(e.daily_total_capacity, 1e-9)
-  
+      if containers_scale != 1.0:
+          for eid, e in net.edges.items():
+              e.container_volume = e.container_volume * containers_scale
+               net.weight_cache[eid] = e.travel_time_days / max(e.daily_total_capacity, 1e-9)
+      
       return sim, net, items, demand_signals
 
 
