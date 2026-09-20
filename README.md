@@ -1,10 +1,15 @@
-# ISOMORPH
+# ISOMORPH (modified fork)
+
+> **This is a modified fork of [tuhinsahai/ISOMORPH](https://github.com/tuhinsahai/ISOMORPH), not the official release.**
+> The simulator, datasets, and evaluation code are by the original authors (Zhang et al., 2026; [arXiv:2605.12768](https://arxiv.org/abs/2605.12768)). Please cite their paper. This fork changes only the two items listed under [Modifications in this fork](#modifications-in-this-fork).
 
 A digital twin of a multi-echelon logistics network, plus a zero-shot
-foundation-model evaluation harness. This repository accompanies the
+foundation-model evaluation harness. The upstream repository accompanies the
 paper *ISOMORPH: A Supply Chain Digital Twin for Simulation, Dataset
 Generation, and Forecasting Benchmarks*:
 https://arxiv.org/pdf/2605.12768
+
+Upstream demo (runs the original simulator; it does not include this fork's changes):
 
 <a href="https://huggingface.co/spaces/HyeminGu/ISOMORPH-demo"><font color="red"><strong>Interactive simulation environment</strong></font> for stress-testing supply chains under demand shocks, disruptions, and cascading transport congestion</a>
 
@@ -12,7 +17,49 @@ https://arxiv.org/pdf/2605.12768
 
 ---
 
-## Updates
+## Modifications in this fork
+
+This fork adapts the simulator for policy-comparison experiments that need runs shorter than 7,300 days and a continuous capacity-severity setting. The model equations, network, demand process, and control rules are unchanged. The changes are in `simulator/`; `git diff upstream/main...main -- simulator/` lists exactly which scripts differ from upstream.
+
+| # | Modification | Upstream behavior | Fork behavior | Designed to leave upstream output unchanged at |
+|---|--------------|-------------------|---------------|-----------------------------------------------|
+| 1 | Global-shock durations scale with run length | The global-shock generator draws 5 to 11 events of 180 to 1,100 days regardless of `--days`. At short horizons the events cover most of the run. | Event durations are multiplied by `--days / 7300`. | `--days 7300` (factor 1.0) |
+| 2 | `--containers_scale` acts on continuous container volume | The scale multiplies the integer `num_containers_per_day` and is rounded, so nearby values can produce identical output. Last-mile edge capacity is then recalibrated to a fixed margin over demand, which overrides the scale on those two edges. | The scale multiplies `container_volume` after last-mile calibration, and the routing-weight cache is refreshed for all edges. | `--containers_scale 1.0` |
+
+### Compatibility with upstream
+
+- Both modifications are designed to leave the released baseline unchanged (`--days 7300`, `--containers_scale 1.0`). The check at the end of this section compares this fork with upstream directly.
+- The Edge-cap sweep (`--containers_scale` 0.3, 0.6, 1.5, 2.5) will differ from the upstream datasets, because modification 2 changes how the knob acts. Use the upstream repository to regenerate those datasets.
+
+### Usage note for modification 2
+
+Last-mile capacity is set to about (1.20 / 0.93) × `containers_scale` times demand, so demand exceeds capacity below `containers_scale` = 0.93 / 1.20 ≈ 0.775. Convergence to a steady state slows between about 0.75 and 0.80.
+
+### Checking equivalence with upstream
+
+```bash
+git clone https://github.com/tuhinsahai/ISOMORPH.git ../ISOMORPH_upstream
+
+python ../ISOMORPH_upstream/simulator/Supplychaingeo_item50.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --out_dir /tmp/up_baseline --scenario_name baseline
+
+python simulator/Supplychaingeo_item50.py \
+    --days 7300 --seed 2025 --pipeline_mult 7 \
+    --out_dir /tmp/fork_baseline --scenario_name baseline
+
+diff -rq -x scenario.json /tmp/up_baseline /tmp/fork_baseline && echo IDENTICAL
+```
+
+### Provenance
+
+Forked from `tuhinsahai/ISOMORPH`. Modifications by Niloy Dey. Code is MIT-licensed as upstream; see [Licence](#licence).
+
+---
+
+## Upstream updates
+
+*Entries below are copied from the upstream repository. They describe upstream code, not this fork's changes.*
 
 **08/05/2026** — Extended `simulator/Supplychaingeo_item50_v2.py` with three
 scenario-control knobs and two new reproducible edge-cut example datasets.
@@ -115,6 +162,7 @@ Each rollout writes:
 
 - One step is one day. The released horizon is `T = 7,300`.
 - All released runs use seed `2025`.
+- This fork: `--days` values other than 7,300 rescale the global-shock durations (modification 1). At 7,300 the scale factor is 1.0.
 
 ---
 
@@ -156,6 +204,8 @@ below; the remaining knobs stay at their baseline.
 | Edge cap   | `--containers_scale`                         | `0.3, 0.6, 1.0, 1.5, 2.5`                             |
 | Buffer     | `--ss_scale`                                 | `0.1, 0.2, 0.5, 0.75, 1.0`                            |
 | Lead time  | `--leadtime_scale`                           | `1.0, 2.0, 5.0, 10.0, 20.0`                           |
+
+> **Fork note.** In this fork the Edge-cap sweep (`--containers_scale` 0.3, 0.6, 1.5, 2.5) will differ from the upstream datasets, because modification 2 changes how the knob acts (see [Modifications in this fork](#modifications-in-this-fork)). Use the upstream repository to regenerate those datasets.
 
 Two compound scenarios used in the foundation-model evaluation:
 
