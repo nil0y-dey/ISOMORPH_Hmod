@@ -259,10 +259,15 @@ class SupplyChainSimulation:
         demand_fn: Callable[[int], Dict[str, int]],
         horizon_days: int,
         seed: int = 42,
-        pipeline_multiplier: float = 0.0,
+        pipeline_multiplier: float = 0.0,       # patch
         streaming_out_dir: Optional[str] = None,
         packing: str = "greedy",
+        disrupt_capacity_scale: float = 1.0,
+        disrupt_start_day: int = 0,
+        disrupt_duration: int = 0,
     ) -> None:
+      
+        
         assert destination_id in network.nodes and \
             network.nodes[destination_id].is_destination
         self.network = network
