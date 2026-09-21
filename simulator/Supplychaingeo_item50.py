@@ -283,6 +283,15 @@ class SupplyChainSimulation:
         self.packing = packing
         self.pipeline_multiplier = pipeline_multiplier
 
+        # PATCH 3: scheduled capacity factor for timed, bounded disruptions.
+        # capacity_factor = disrupt_capacity_scale during
+        # [disrupt_start_day, disrupt_start_day+disrupt_duration), else 1.0.
+        # No-op when disrupt_duration=0 (the default).
+      
+        self.disrupt_capacity_scale = disrupt_capacity_scale
+        self.disrupt_start_day = disrupt_start_day
+        self.disrupt_duration = disrupt_duration
+
         # EMA warm-start at approximate per-day mean demand
         self.demand_ema: Dict[str, float] = {iid: 165.0 for iid in items}
         self.ema_alpha = 0.05
@@ -428,8 +437,16 @@ class SupplyChainSimulation:
             if qty > 0:
                 dest.inventory[iid] = dest.inventory.get(iid, 0) + qty
 
-        # 3) Reset edge containers
-        net.reset_daily_edges(1.0)
+        # # 3) Reset edge containers
+        # net.reset_daily_edges(1.0)
+
+        # 3) Reset edge containers (PATCH 3: scheduled capacity factor)
+        if self.disrupt_duration > 0 and \
+                self.disrupt_start_day <= day < self.disrupt_start_day + self.disrupt_duration:
+            cap_factor = self.disrupt_capacity_scale
+        else:
+            cap_factor = 1.0
+        net.reset_daily_edges(cap_factor)
 
         # 4) Demand at destination
         td = self.demand_fn(day)
@@ -995,10 +1012,16 @@ def build_example_simulation_from_adjacency(
     net = build_network_from_adjacency(nodes_meta, adj)
 
     
+   
     sc = scenario or {}
     containers_scale = float(sc.get("containers_scale", 1.0))
+    disrupt_capacity_scale = float(sc.get("disrupt_capacity_scale", 1.0))
+    disrupt_start_day = int(sc.get("disrupt_start_day", 0))
+    disrupt_duration = int(sc.get("disrupt_duration", 0))
 
     base_lambda_lo = float(sc.get("base_lambda_lo", 80))
+
+  
     base_lambda_hi = float(sc.get("base_lambda_hi", 250))
 
     print("Building day-level demand signals...")
@@ -1032,6 +1055,7 @@ def build_example_simulation_from_adjacency(
           f"Last-mile cap: {last_mile_cap:.0f}/day  "
           f"Ratio: {last_mile_cap/total_demand_vol:.1%}  "
           f"(Philadelphia={philadelphia_cv:.0f} Baltimore={baltimore_cv:.0f})")
+
     sim = SupplyChainSimulation(
         network=net,
         items=items,
@@ -1041,7 +1065,10 @@ def build_example_simulation_from_adjacency(
         seed=seed,
         pipeline_multiplier=pipeline_multiplier,
         streaming_out_dir=streaming_out_dir,
-        packing=packing)
+        packing=packing,
+        disrupt_capacity_scale=disrupt_capacity_scale,
+        disrupt_start_day=disrupt_start_day,
+        disrupt_duration=disrupt_duration)
 
       # PATCHED: apply containers_scale AFTER self-calibration, to
       # container_volume (continuous) rather than num_containers_per_day
