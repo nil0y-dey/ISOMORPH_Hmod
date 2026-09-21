@@ -1157,8 +1157,19 @@ if __name__ == "__main__":
     ap.add_argument("--burst_height_scale", type=float, default=1.0,
                     help="Multiplier on per-item burst height h. "
                          "1.0 reproduces baseline.")
+
+
     ap.add_argument("--base_lambda_lo",     type=float, default=80.0)
     ap.add_argument("--base_lambda_hi",     type=float, default=250.0)
+    ap.add_argument("--disrupt_capacity_scale", type=float, default=1.0,
+                    help="Capacity multiplier applied only during the "
+                         "disruption window [disrupt_start_day, "
+                         "disrupt_start_day+disrupt_duration). 1.0 = no-op.")
+    ap.add_argument("--disrupt_start_day",  type=int,   default=0)
+    ap.add_argument("--disrupt_duration",   type=int,   default=0,
+                    help="Length of the disruption window in days. "
+                         "0 = no disruption (default, reproduces baseline).")
+  
     ap.add_argument("--scenario_name",      type=str,   default="baseline",
                     help="Label written into <out_dir>/scenario.json")
     args = ap.parse_args()
