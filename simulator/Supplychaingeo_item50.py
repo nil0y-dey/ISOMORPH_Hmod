@@ -1187,6 +1187,9 @@ if __name__ == "__main__":
         "burst_height_scale": args.burst_height_scale,
         "base_lambda_lo": args.base_lambda_lo,
         "base_lambda_hi": args.base_lambda_hi,
+        "disrupt_capacity_scale": args.disrupt_capacity_scale,
+        "disrupt_start_day": args.disrupt_start_day,
+        "disrupt_duration": args.disrupt_duration,
         "seed": args.seed, "days": args.days,
     }
 
